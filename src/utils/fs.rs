@@ -1,7 +1,7 @@
 use errors::*;
 use std::convert::Into;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// Takes a path to a file and try to read the file into a String
@@ -77,6 +77,20 @@ pub fn path_to_root<P: Into<PathBuf>>(path: P) -> String {
 /// it checks every directory in the path to see if it exists,
 /// and if it does not it will be created.
 pub fn create_file(path: &Path) -> Result<File> {
+    debug!("Creating {}", path.display());
+
+    // Construct path
+    if let Some(p) = path.parent() {
+        trace!("Parent directory is: {:?}", p);
+
+        fs::create_dir_all(p)?;
+    }
+
+    File::create(path).map_err(Into::into)
+}
+
+// TODO[SNAFU] - unify
+pub fn create_file_raw(path: &Path) -> io::Result<File> {
     debug!("Creating {}", path.display());
 
     // Construct path

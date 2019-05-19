@@ -13,6 +13,8 @@ pub use self::book::{load_book, Book, BookItem, BookItems, Chapter};
 pub use self::init::BookBuilder;
 pub use self::summary::{parse_summary, Link, SectionNumber, Summary, SummaryItem};
 
+pub use self::book::Error as BookError;
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;

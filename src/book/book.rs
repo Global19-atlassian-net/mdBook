@@ -1,27 +1,63 @@
 use std::collections::VecDeque;
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use super::summary::{parse_summary, Link, SectionNumber, Summary, SummaryItem};
 use config::BuildConfig;
-use errors::*;
+use snafu::{ResultExt, Snafu};
+
+#[allow(missing_docs)] // TODO[SNAFU]
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("Couldn't read summary from {}: {}", path.display(), source))]
+    ReadSummary {
+        source: io::Error,
+        path: PathBuf,
+    },
+
+    // TODO[SNAFU]: Need this recursive type?
+    #[snafu(display("Summary parsing failed: {}", source))]
+    ParseSummary {
+        #[snafu(source(from(::errors::Error, Box::new)))]
+        source: Box<::errors::Error>,
+    },
+
+    #[snafu(display("Unable to create missing chapter at {}: {}", path.display(), source))]
+    CreateChapter {
+        source: io::Error,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Unable to write missing chapter at {}: {}", path.display(), source))]
+    WriteChapter {
+        source: io::Error,
+        path: PathBuf,
+    },
+
+    #[snafu(display(r#"Unable to read "{}" from {}: {}"#, link_name, path.display(), source))]
+    ReadChapter {
+        source: io::Error,
+        link_name: String,
+        path: PathBuf,
+    },
+}
+
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Load a book into memory from its `src/` directory.
 pub fn load_book<P: AsRef<Path>>(src_dir: P, cfg: &BuildConfig) -> Result<Book> {
     let src_dir = src_dir.as_ref();
     let summary_md = src_dir.join("SUMMARY.md");
 
-    let mut summary_content = String::new();
-    File::open(summary_md)
-        .chain_err(|| "Couldn't open SUMMARY.md")?
-        .read_to_string(&mut summary_content)?;
+    let summary_content = fs::read_to_string(&summary_md)
+        .context(ReadSummary { path: &summary_md })?;
 
-    let summary = parse_summary(&summary_content).chain_err(|| "Summary parsing failed")?;
+    let summary = parse_summary(&summary_content).context(ParseSummary)?;
 
     if cfg.create_missing {
-        create_missing(&src_dir, &summary).chain_err(|| "Unable to create missing chapters")?;
+        create_missing(&src_dir, &summary)?;
     }
 
     load_book_from_disk(&summary, src_dir)
@@ -41,15 +77,8 @@ fn create_missing(src_dir: &Path, summary: &Summary) -> Result<()> {
         if let SummaryItem::Link(ref link) = *next {
             let filename = src_dir.join(&link.location);
             if !filename.exists() {
-                if let Some(parent) = filename.parent() {
-                    if !parent.exists() {
-                        fs::create_dir_all(parent)?;
-                    }
-                }
-                debug!("Creating missing file {}", filename.display());
-
-                let mut f = File::create(&filename)?;
-                writeln!(f, "# {}", link.name)?;
+                let mut f = ::utils::fs::create_file_raw(&filename).context(CreateChapter { path: &filename })?;
+                writeln!(f, "# {}", link.name).context(WriteChapter { path: &filename })?;
             }
 
             items.extend(&link.nested_items);
@@ -229,12 +258,8 @@ fn load_chapter<P: AsRef<Path>>(
         src_dir.join(&link.location)
     };
 
-    let mut f = File::open(&location)
-        .chain_err(|| format!("Chapter file not found, {}", link.location.display()))?;
-
-    let mut content = String::new();
-    f.read_to_string(&mut content)
-        .chain_err(|| format!("Unable to read \"{}\" ({})", link.name, location.display()))?;
+    let content = fs::read_to_string(&location)
+        .context(ReadChapter{ link_name: link.name.as_str(), path: &location })?;
 
     let stripped = location
         .strip_prefix(&src_dir)
@@ -299,6 +324,7 @@ impl Display for Chapter {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::fs::File;
     use tempfile::{Builder as TempFileBuilder, TempDir};
 
     const DUMMY_SRC: &str = "

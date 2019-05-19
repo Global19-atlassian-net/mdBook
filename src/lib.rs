@@ -1,3 +1,5 @@
+#![recursion_limit = "128"]
+
 //! # mdBook
 //!
 //! **mdBook** is a tool for rendering a collection of markdown documents into
@@ -85,6 +87,7 @@
 
 #[macro_use]
 extern crate error_chain;
+extern crate snafu;
 extern crate handlebars;
 extern crate itertools;
 #[macro_use]
@@ -137,6 +140,8 @@ pub mod errors {
             HandlebarsTemplate(Box<::handlebars::TemplateError>) #[doc = "Unable to parse the template"];
             Utf8(::std::string::FromUtf8Error) #[doc = "Invalid UTF-8"];
             SerdeJson(::serde_json::Error) #[doc = "JSON conversion failed"];
+
+            BookBook(::book::BookError) #[doc = "book::book"];
         }
 
         links {

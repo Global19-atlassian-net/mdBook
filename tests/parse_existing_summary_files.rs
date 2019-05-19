@@ -31,12 +31,13 @@ macro_rules! summary_md_test {
                 .read_to_string(&mut content)
                 .unwrap();
 
-            if let Err(e) = book::parse_summary(&content) {
-                use error_chain::ChainedError;
+            if let Err(_) = book::parse_summary(&content) {
+                // TODO[SNAFU]: replace?
+                //use error_chain::ChainedError;
 
                 eprintln!("Error parsing {}", filename.display());
                 eprintln!();
-                eprintln!("{}", e.display_chain());
+                //eprintln!("{}", e.display_chain());
                 panic!();
             }
         }

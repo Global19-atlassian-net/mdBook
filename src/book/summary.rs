@@ -1,10 +1,50 @@
-use errors::*;
 use memchr::{self, Memchr};
 use pulldown_cmark::{self, Event, Tag};
 use std::fmt::{self, Display, Formatter};
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use snafu::{ResultExt, Snafu, OptionExt};
+
+#[allow(missing_docs)] // TODO[SNAFU]
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("There was an error parsing the prefix chapters: {}", source))]
+    Prefix { source: ParseError },
+
+    #[snafu(display("There was an error parsing the numbered chapters: {}", source))]
+    Numbered { source: ParseError },
+
+    #[snafu(display("There was an error parsing the suffix chapters: {}", source))]
+    Suffix { source: ParseError },
+}
+
+#[allow(missing_docs)] // TODO[SNAFU]
+#[derive(Debug, Snafu)]
+pub enum ParseError {
+    #[snafu(display("Suffix chapters cannot be followed by a list (line {}, column {})", line, column))]
+    SuffixFollowedByList {
+        line: usize,
+        column: usize,
+    },
+
+    #[snafu(display("You can't have an empty link (line {}, column {})", line, column))]
+    EmptyLink {
+        line: usize,
+        column: usize,
+    },
+
+    #[snafu(display("The link items for nested chapters must only contain a hyperlink (line {}, column {})", line, column))]
+    NestedChapterHyperlink {
+        line: usize,
+        column: usize,
+    },
+
+    #[snafu(display("Unable to get last link because the list of SummaryItems doesn't contain any Links"))]
+    NoLinks {},
+}
+
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Parse the text from a `SUMMARY.md` file into a sort of "recipe" to be
 /// used when loading a book from disk.
@@ -223,13 +263,13 @@ impl<'a> SummaryParser<'a> {
 
         let prefix_chapters = self
             .parse_affix(true)
-            .chain_err(|| "There was an error parsing the prefix chapters")?;
+            .context(Prefix)?;
         let numbered_chapters = self
             .parse_numbered()
-            .chain_err(|| "There was an error parsing the numbered chapters")?;
+            .context(Numbered)?;
         let suffix_chapters = self
             .parse_affix(false)
-            .chain_err(|| "There was an error parsing the suffix chapters")?;
+            .context(Suffix)?;
 
         Ok(Summary {
             title,
@@ -241,7 +281,7 @@ impl<'a> SummaryParser<'a> {
 
     /// Parse the affix chapters. This expects the first event (start of
     /// paragraph) to have already been consumed by the previous parser.
-    fn parse_affix(&mut self, is_prefix: bool) -> Result<Vec<SummaryItem>> {
+    fn parse_affix(&mut self, is_prefix: bool) -> Result<Vec<SummaryItem>, ParseError> {
         let mut items = Vec::new();
         debug!(
             "Parsing {} items",
@@ -256,7 +296,8 @@ impl<'a> SummaryParser<'a> {
                         // of the numbered section.
                         break;
                     } else {
-                        bail!(self.parse_error("Suffix chapters cannot be followed by a list"));
+                        let (line, column) = self.current_location();
+                        return SuffixFollowedByList { line, column }.fail();
                     }
                 }
                 Some(Event::Start(Tag::Link(href, _))) => {
@@ -272,12 +313,13 @@ impl<'a> SummaryParser<'a> {
         Ok(items)
     }
 
-    fn parse_link(&mut self, href: String) -> Result<Link> {
+    fn parse_link(&mut self, href: String) -> Result<Link, ParseError> {
         let link_content = collect_events!(self.stream, end Tag::Link(..));
         let name = stringify_events(link_content);
 
         if href.is_empty() {
-            Err(self.parse_error("You can't have an empty link."))
+            let (line, column) = self.current_location();
+            return EmptyLink { line, column }.fail();
         } else {
             Ok(Link {
                 name,
@@ -290,7 +332,7 @@ impl<'a> SummaryParser<'a> {
 
     /// Parse the numbered chapters. This assumes the opening list tag has
     /// already been consumed by a previous parser.
-    fn parse_numbered(&mut self) -> Result<Vec<SummaryItem>> {
+    fn parse_numbered(&mut self) -> Result<Vec<SummaryItem>, ParseError> {
         let mut items = Vec::new();
         let mut root_items = 0;
         let root_number = SectionNumber::default();
@@ -358,7 +400,7 @@ impl<'a> SummaryParser<'a> {
         next
     }
 
-    fn parse_nested_numbered(&mut self, parent: &SectionNumber) -> Result<Vec<SummaryItem>> {
+    fn parse_nested_numbered(&mut self, parent: &SectionNumber) -> Result<Vec<SummaryItem>, ParseError> {
         debug!("Parsing numbered chapters at level {}", parent);
         let mut items = Vec::new();
 
@@ -393,7 +435,7 @@ impl<'a> SummaryParser<'a> {
         &mut self,
         parent: &SectionNumber,
         num_existing_items: usize,
-    ) -> Result<SummaryItem> {
+    ) -> Result<SummaryItem, ParseError> {
         loop {
             match self.next_event() {
                 Some(Event::Start(Tag::Paragraph)) => continue,
@@ -415,18 +457,11 @@ impl<'a> SummaryParser<'a> {
                 }
                 other => {
                     warn!("Expected a start of a link, actually got {:?}", other);
-                    bail!(self.parse_error(
-                        "The link items for nested chapters must only contain a hyperlink"
-                    ));
+                    let (line, column) = self.current_location();
+                    return NestedChapterHyperlink { line, column }.fail();
                 }
             }
         }
-    }
-
-    fn parse_error<D: Display>(&self, msg: D) -> Error {
-        let (line, col) = self.current_location();
-
-        ErrorKind::ParseError(line, col, msg.to_string()).into()
     }
 
     /// Try to parse the title line.
@@ -456,17 +491,14 @@ fn update_section_numbers(sections: &mut [SummaryItem], level: usize, by: u32) {
 
 /// Gets a pointer to the last `Link` in a list of `SummaryItem`s, and its
 /// index.
-fn get_last_link(links: &mut [SummaryItem]) -> Result<(usize, &mut Link)> {
+fn get_last_link(links: &mut [SummaryItem]) -> Result<(usize, &mut Link), ParseError> {
     links
         .iter_mut()
         .enumerate()
         .filter_map(|(i, item)| item.maybe_link_mut().map(|l| (i, l)))
         .rev()
         .next()
-        .ok_or_else(|| {
-            "Unable to get last link because the list of SummaryItems doesn't contain any Links"
-                .into()
-        })
+        .context(NoLinks)
 }
 
 /// Removes the styling from a list of Markdown events and returns just the

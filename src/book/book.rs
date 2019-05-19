@@ -17,11 +17,9 @@ pub enum Error {
         path: PathBuf,
     },
 
-    // TODO[SNAFU]: Need this recursive type?
     #[snafu(display("Summary parsing failed: {}", source))]
     ParseSummary {
-        #[snafu(source(from(::errors::Error, Box::new)))]
-        source: Box<::errors::Error>,
+        source: super::summary::Error,
     },
 
     #[snafu(display("Unable to create missing chapter at {}: {}", path.display(), source))]

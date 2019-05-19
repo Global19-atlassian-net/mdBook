@@ -589,6 +589,7 @@ dependencies = [
  "serde_derive 1.0.90 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 1.0.39 (registry+https://github.com/rust-lang/crates.io-index)",
  "shlex 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "snafu 0.4.1",
  "staticfile 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tempfile 3.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "toml 0.4.10 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1150,6 +1151,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "smallvec"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "snafu"
+version = "0.4.1"
+dependencies = [
+ "backtrace 0.3.15 (registry+https://github.com/rust-lang/crates.io-index)",
+ "snafu-derive 0.4.1",
+]
+
+[[package]]
+name = "snafu-derive"
+version = "0.4.1"
+dependencies = [
+ "proc-macro2 0.4.29 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quote 0.6.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "syn 0.15.33 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "staticfile"

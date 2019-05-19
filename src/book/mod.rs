@@ -14,6 +14,7 @@ pub use self::init::BookBuilder;
 pub use self::summary::{parse_summary, Link, SectionNumber, Summary, SummaryItem};
 
 pub use self::book::Error as BookError;
+pub use self::init::Error as InitError;
 
 use std::io::Write;
 use std::path::PathBuf;

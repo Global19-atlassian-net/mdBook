@@ -1,12 +1,75 @@
 use std::fs::{self, File};
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use toml;
 
 use super::MDBook;
 use config::Config;
-use errors::*;
+use snafu::{ResultExt, Snafu};
 use theme;
+
+// Used to batch IO operations for the purpose of grouping error
+// reporting.
+fn try_create_and_write_file<F>(path: &Path, f: F) -> io::Result<()>
+where
+    F: FnOnce(&mut File) -> io::Result<()>
+{
+    let mut file = File::create(path)?;
+    f(&mut file)
+}
+
+#[allow(missing_docs)] // TODO[SNAFU]
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("Unable to serialize the config: {}", source))]
+    SerializeConfig {
+        source: toml::ser::Error,
+    },
+
+    #[snafu(display("Unable to write the config to {}: {}", path.display(), source))]
+    CreateConfig {
+        source: io::Error,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Couldn't create theme directory {}: {}", path.display(), source))]
+    CreateThemeDir {
+        source: io::Error,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Couldn't copy theme file {}: {}", path.display(), source))]
+    CreateThemeFile {
+        source: io::Error,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Unable to create .gitignore at {}: {}", path.display(), source))]
+    CreateGitignore {
+        source: io::Error,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Unable to create summary at {}: {}", path.display(), source))]
+    CreateSummary {
+        source: io::Error,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Unable to create chapter one at {}: {}", path.display(), source))]
+    CreateChapterOne {
+        source: io::Error,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Unable to create scaffolding directory at {}: {}", path.display(), source))]
+    CreateScaffoldDirectory {
+        source: io::Error,
+        path: PathBuf,
+    },
+}
+
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// A helper for setting up a new book and its directory structure.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,20 +127,15 @@ impl BookBuilder {
     pub fn build(&self) -> Result<MDBook> {
         info!("Creating a new book with stub content");
 
-        self.create_directory_structure()
-            .chain_err(|| "Unable to create directory structure")?;
-
-        self.create_stub_files()
-            .chain_err(|| "Unable to create stub files")?;
+        self.create_directory_structure()?;
+        self.create_stub_files()?;
 
         if self.create_gitignore {
-            self.build_gitignore()
-                .chain_err(|| "Unable to create .gitignore")?;
+            self.build_gitignore()?;
         }
 
         if self.copy_theme {
-            self.copy_across_theme()
-                .chain_err(|| "Unable to copy across the theme")?;
+            self.copy_across_theme()?
         }
 
         self.write_book_toml()?;
@@ -98,12 +156,10 @@ impl BookBuilder {
     fn write_book_toml(&self) -> Result<()> {
         debug!("Writing book.toml");
         let book_toml = self.root.join("book.toml");
-        let cfg = toml::to_vec(&self.config).chain_err(|| "Unable to serialize the config")?;
+        let cfg = toml::to_vec(&self.config).context(SerializeConfig)?;
 
-        File::create(book_toml)
-            .chain_err(|| "Couldn't create book.toml")?
-            .write_all(&cfg)
-            .chain_err(|| "Unable to write config to book.toml")?;
+        fs::write(&book_toml, cfg)
+            .context(CreateConfig { path: &book_toml })?;
         Ok(())
     }
 
@@ -115,45 +171,31 @@ impl BookBuilder {
             .html_config()
             .and_then(|html| html.theme)
             .unwrap_or_else(|| self.config.book.src.join("theme"));
+
+        let create_theme_dir = |path| {
+            fs::create_dir_all(&path).context(CreateThemeDir { path })
+        };
+
+        let create_theme_file = |path, contents| {
+            fs::write(&path, contents).context(CreateThemeFile { path })
+        };
+
         let themedir = self.root.join(themedir);
-
-        if !themedir.exists() {
-            debug!(
-                "{} does not exist, creating the directory",
-                themedir.display()
-            );
-            fs::create_dir(&themedir)?;
-        }
-
-        let mut index = File::create(themedir.join("index.hbs"))?;
-        index.write_all(theme::INDEX)?;
-
         let cssdir = themedir.join("css");
-        fs::create_dir(&cssdir)?;
 
-        let mut general_css = File::create(cssdir.join("general.css"))?;
-        general_css.write_all(theme::GENERAL_CSS)?;
+        create_theme_dir(&themedir)?;
+        create_theme_dir(&cssdir)?;
 
-        let mut chrome_css = File::create(cssdir.join("chrome.css"))?;
-        chrome_css.write_all(theme::CHROME_CSS)?;
+        create_theme_file(themedir.join("index.hbs"), theme::INDEX)?;
+        create_theme_file(themedir.join("favicon.png"), theme::FAVICON)?;
+        create_theme_file(themedir.join("book.js"), theme::JS)?;
+        create_theme_file(themedir.join("highlight.css"), theme::HIGHLIGHT_CSS)?;
+        create_theme_file(themedir.join("highlight.js"), theme::HIGHLIGHT_JS)?;
 
-        let mut print_css = File::create(cssdir.join("print.css"))?;
-        print_css.write_all(theme::PRINT_CSS)?;
-
-        let mut variables_css = File::create(cssdir.join("variables.css"))?;
-        variables_css.write_all(theme::VARIABLES_CSS)?;
-
-        let mut favicon = File::create(themedir.join("favicon.png"))?;
-        favicon.write_all(theme::FAVICON)?;
-
-        let mut js = File::create(themedir.join("book.js"))?;
-        js.write_all(theme::JS)?;
-
-        let mut highlight_css = File::create(themedir.join("highlight.css"))?;
-        highlight_css.write_all(theme::HIGHLIGHT_CSS)?;
-
-        let mut highlight_js = File::create(themedir.join("highlight.js"))?;
-        highlight_js.write_all(theme::HIGHLIGHT_JS)?;
+        create_theme_file(cssdir.join("general.css"), theme::GENERAL_CSS)?;
+        create_theme_file(cssdir.join("chrome.css"), theme::CHROME_CSS)?;
+        create_theme_file(cssdir.join("print.css"), theme::PRINT_CSS)?;
+        create_theme_file(cssdir.join("variables.css"), theme::VARIABLES_CSS)?;
 
         Ok(())
     }
@@ -161,11 +203,11 @@ impl BookBuilder {
     fn build_gitignore(&self) -> Result<()> {
         debug!("Creating .gitignore");
 
-        let mut f = File::create(self.root.join(".gitignore"))?;
-
-        writeln!(f, "{}", self.config.build.build_dir.display())?;
-
-        Ok(())
+        let gitignore = self.root.join(".gitignore");
+        try_create_and_write_file(&gitignore, |f| {
+            writeln!(f, "{}", self.config.build.build_dir.display())?;
+            Ok(())
+        }).context(CreateGitignore { path: gitignore })
     }
 
     fn create_stub_files(&self) -> Result<()> {
@@ -175,14 +217,18 @@ impl BookBuilder {
         let summary = src_dir.join("SUMMARY.md");
         if !summary.exists() {
             trace!("No summary found creating stub summary and chapter_1.md.");
-            let mut f = File::create(&summary).chain_err(|| "Unable to create SUMMARY.md")?;
-            writeln!(f, "# Summary")?;
-            writeln!(f)?;
-            writeln!(f, "- [Chapter 1](./chapter_1.md)")?;
+            try_create_and_write_file(&summary, |f| {
+                writeln!(f, "# Summary")?;
+                writeln!(f)?;
+                writeln!(f, "- [Chapter 1](./chapter_1.md)")?;
+                Ok(())
+            }).context(CreateSummary { path: summary })?;
 
             let chapter_1 = src_dir.join("chapter_1.md");
-            let mut f = File::create(&chapter_1).chain_err(|| "Unable to create chapter_1.md")?;
-            writeln!(f, "# Chapter 1")?;
+            try_create_and_write_file(&chapter_1, |f| {
+                writeln!(f, "# Chapter 1")?;
+                Ok(())
+            }).context(CreateChapterOne { path: chapter_1 })?;
         } else {
             trace!("Existing summary found, no need to create stub files.");
         }
@@ -191,13 +237,13 @@ impl BookBuilder {
 
     fn create_directory_structure(&self) -> Result<()> {
         debug!("Creating directory tree");
-        fs::create_dir_all(&self.root)?;
+        fs::create_dir_all(&self.root).context(CreateScaffoldDirectory { path: &self.root })?;
 
         let src = self.root.join(&self.config.book.src);
-        fs::create_dir_all(&src)?;
+        fs::create_dir_all(&src).context(CreateScaffoldDirectory { path: &src })?;
 
         let build = self.root.join(&self.config.build.build_dir);
-        fs::create_dir_all(&build)?;
+        fs::create_dir_all(&build).context(CreateScaffoldDirectory { path: &build })?;
 
         Ok(())
     }

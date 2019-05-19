@@ -142,6 +142,7 @@ pub mod errors {
             SerdeJson(::serde_json::Error) #[doc = "JSON conversion failed"];
 
             BookBook(::book::BookError) #[doc = "book::book"];
+            BookInit(::book::InitError) #[doc = "book::init"];
         }
 
         links {

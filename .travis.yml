@@ -82,11 +82,6 @@ deploy:
     condition: $TRAVIS_OS_NAME = "linux" && $TRAVIS_RUST_VERSION = "stable"
     tags: true
 
-branches:
-  only:
-    - master
-    - /^v\d+\.\d+\.\d+.*$/
-
 notifications:
   email:
     on_success: never

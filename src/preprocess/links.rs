@@ -2,7 +2,7 @@ use crate::errors::*;
 use crate::utils::{take_anchored_lines, take_lines};
 use regex::{CaptureMatches, Captures, Regex};
 use std::fs;
-use std::ops::{Range, RangeFrom, RangeFull, RangeTo};
+use std::ops::{Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeTo};
 use std::path::{Path, PathBuf};
 
 use super::{Preprocessor, PreprocessorContext};
@@ -102,12 +102,37 @@ where
 #[derive(PartialEq, Debug, Clone)]
 enum LinkType<'a> {
     Escaped,
-    IncludeRange(PathBuf, Range<usize>),
-    IncludeRangeFrom(PathBuf, RangeFrom<usize>),
-    IncludeRangeTo(PathBuf, RangeTo<usize>),
-    IncludeRangeFull(PathBuf, RangeFull),
+    IncludeRange(PathBuf, SomeRange),
     IncludeAnchor(PathBuf, String),
     Playpen(PathBuf, Vec<&'a str>),
+}
+
+#[derive(PartialEq, Debug, Clone)]
+enum SomeRange {
+    Range(Range<usize>),
+    RangeFrom(RangeFrom<usize>),
+    RangeTo(RangeTo<usize>),
+    RangeFull(RangeFull),
+}
+
+impl RangeBounds<usize> for SomeRange {
+    fn start_bound(&self) -> Bound<&usize> {
+        match self {
+            SomeRange::Range(r) => r.start_bound(),
+            SomeRange::RangeFrom(r) => r.start_bound(),
+            SomeRange::RangeTo(r) => r.start_bound(),
+            SomeRange::RangeFull(r) => r.start_bound(),
+        }
+    }
+
+    fn end_bound(&self) -> Bound<&usize> {
+        match self {
+            SomeRange::Range(r) => r.end_bound(),
+            SomeRange::RangeFrom(r) => r.end_bound(),
+            SomeRange::RangeTo(r) => r.end_bound(),
+            SomeRange::RangeFull(r) => r.end_bound(),
+        }
+    }
 }
 
 impl<'a> LinkType<'a> {
@@ -116,9 +141,6 @@ impl<'a> LinkType<'a> {
         match self {
             LinkType::Escaped => None,
             LinkType::IncludeRange(p, _) => Some(return_relative_path(base, &p)),
-            LinkType::IncludeRangeFrom(p, _) => Some(return_relative_path(base, &p)),
-            LinkType::IncludeRangeTo(p, _) => Some(return_relative_path(base, &p)),
-            LinkType::IncludeRangeFull(p, _) => Some(return_relative_path(base, &p)),
             LinkType::IncludeAnchor(p, _) => Some(return_relative_path(base, &p)),
             LinkType::Playpen(p, _) => Some(return_relative_path(base, &p)),
         }
@@ -155,24 +177,24 @@ fn parse_include_path(path: &str) -> LinkType<'static> {
     let end = end.and_then(|s| s.parse::<usize>().ok());
     match start {
         Some(start) => match end {
-            Some(end) => LinkType::IncludeRange(path, Range { start, end }),
+            Some(end) => LinkType::IncludeRange(path, SomeRange::Range(Range { start, end })),
             None => {
                 if has_end {
-                    LinkType::IncludeRangeFrom(path, RangeFrom { start })
+                    LinkType::IncludeRange(path, SomeRange::RangeFrom(RangeFrom { start }))
                 } else {
                     LinkType::IncludeRange(
                         path,
-                        Range {
+                        SomeRange::Range(Range {
                             start,
                             end: start + 1,
-                        },
+                        }),
                     )
                 }
             }
         },
         None => match end {
-            Some(end) => LinkType::IncludeRangeTo(path, RangeTo { end }),
-            None => LinkType::IncludeRangeFull(path, RangeFull),
+            Some(end) => LinkType::IncludeRange(path, SomeRange::RangeTo(RangeTo { end })),
+            None => LinkType::IncludeRange(path, SomeRange::RangeFull(RangeFull)),
         },
     }
 }
@@ -232,43 +254,6 @@ impl<'a> Link<'a> {
                             target.display(),
                         )
                     })
-            }
-            LinkType::IncludeRangeFrom(ref pat, ref range) => {
-                let target = base.join(pat);
-
-                fs::read_to_string(&target)
-                    .map(|s| take_lines(&s, range.clone()))
-                    .chain_err(|| {
-                        format!(
-                            "Could not read file for link {} ({})",
-                            self.link_text,
-                            target.display(),
-                        )
-                    })
-            }
-            LinkType::IncludeRangeTo(ref pat, ref range) => {
-                let target = base.join(pat);
-
-                fs::read_to_string(&target)
-                    .map(|s| take_lines(&s, *range))
-                    .chain_err(|| {
-                        format!(
-                            "Could not read file for link {} ({})",
-                            self.link_text,
-                            target.display(),
-                        )
-                    })
-            }
-            LinkType::IncludeRangeFull(ref pat, _) => {
-                let target = base.join(pat);
-
-                fs::read_to_string(&target).chain_err(|| {
-                    format!(
-                        "Could not read file for link {} ({})",
-                        self.link_text,
-                        target.display()
-                    )
-                })
             }
             LinkType::IncludeAnchor(ref pat, ref anchor) => {
                 let target = base.join(pat);
@@ -421,7 +406,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 48,
-                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), 9..20),
+                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), SomeRange::Range(9..20)),
                 link_text: "{{#include file.rs:10:20}}",
             }]
         );
@@ -437,7 +422,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 45,
-                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), 9..10),
+                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), SomeRange::Range(9..10)),
                 link_text: "{{#include file.rs:10}}",
             }]
         );
@@ -453,7 +438,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 46,
-                link_type: LinkType::IncludeRangeFrom(PathBuf::from("file.rs"), 9..),
+                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), SomeRange::RangeFrom(9..)),
                 link_text: "{{#include file.rs:10:}}",
             }]
         );
@@ -469,7 +454,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 46,
-                link_type: LinkType::IncludeRangeTo(PathBuf::from("file.rs"), ..20),
+                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), SomeRange::RangeTo(..20)),
                 link_text: "{{#include file.rs::20}}",
             }]
         );
@@ -485,7 +470,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 44,
-                link_type: LinkType::IncludeRangeFull(PathBuf::from("file.rs"), ..),
+                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), SomeRange::RangeFull(..)),
                 link_text: "{{#include file.rs::}}",
             }]
         );
@@ -501,7 +486,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 42,
-                link_type: LinkType::IncludeRangeFull(PathBuf::from("file.rs"), ..),
+                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), SomeRange::RangeFull(..)),
                 link_text: "{{#include file.rs}}",
             }]
         );
@@ -587,7 +572,7 @@ mod tests {
             Link {
                 start_index: 38,
                 end_index: 58,
-                link_type: LinkType::IncludeRangeFull(PathBuf::from("file.rs"), ..),
+                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), SomeRange::RangeFull(..)),
                 link_text: "{{#include file.rs}}",
             }
         );

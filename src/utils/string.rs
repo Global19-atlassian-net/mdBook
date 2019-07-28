@@ -55,9 +55,25 @@ pub fn take_anchored_lines(s: &str, anchor: &str) -> String {
     retained.join("\n")
 }
 
+/// Keep lines contained within the range specified as-is.
+/// For any lines not in the range, include them but use `#` at the beginning to hide the lines
+/// from initial display but include them when expanding the code snippet or testing with rustdoc.
+pub fn take_rust_partial_lines<R: RangeBounds<usize>>(s: &str, range: R) -> String {
+    let mut output = String::with_capacity(s.len());
+    for (index, line) in s.lines().enumerate() {
+        if !range.contains(&index) {
+            output.push_str("# ");
+        }
+        output.push_str(line);
+        output.push_str("\n");
+    }
+    output.pop();
+    output
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{take_anchored_lines, take_lines};
+    use super::{take_anchored_lines, take_lines, take_rust_partial_lines};
 
     #[test]
     fn take_lines_test() {
@@ -98,5 +114,17 @@ mod tests {
         );
         assert_eq!(take_anchored_lines(s, "test"), "dolor\nsit\namet");
         assert_eq!(take_anchored_lines(s, "something"), "");
+    }
+
+    #[test]
+    fn take_rust_partial_lines_test() {
+        let s = "Lorem\nipsum\ndolor\nsit\namet";
+        assert_eq!(take_rust_partial_lines(s, 1..3), "# Lorem\nipsum\ndolor\n# sit\n# amet");
+        assert_eq!(take_rust_partial_lines(s, 3..), "# Lorem\n# ipsum\n# dolor\nsit\namet");
+        assert_eq!(take_rust_partial_lines(s, ..3), "Lorem\nipsum\ndolor\n# sit\n# amet");
+        assert_eq!(take_rust_partial_lines(s, ..), s);
+        // corner cases
+        assert_eq!(take_rust_partial_lines(s, 4..3), "# Lorem\n# ipsum\n# dolor\n# sit\n# amet");
+        assert_eq!(take_rust_partial_lines(s, ..100), s);
     }
 }

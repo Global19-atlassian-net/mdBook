@@ -1,5 +1,5 @@
 use crate::errors::*;
-use crate::utils::{take_anchored_lines, take_lines};
+use crate::utils::{take_anchored_lines, take_lines, take_rust_partial_lines};
 use regex::{CaptureMatches, Captures, Regex};
 use std::fs;
 use std::ops::{Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeTo};
@@ -11,8 +11,11 @@ use crate::book::{Book, BookItem};
 const ESCAPE_CHAR: char = '\\';
 const MAX_LINK_NESTED_DEPTH: usize = 10;
 
-/// A preprocessor for expanding the `{{# playpen}}` and `{{# include}}`
-/// helpers in a chapter.
+/// A preprocessor for expanding helpers in a chapter. Supported helpers are:
+///
+/// - `{{# playpen}}` - TODO
+/// - `{{# include}}` - TODO
+/// - `{{# rustpartial}}` - TODO
 #[derive(Default)]
 pub struct LinkPreprocessor;
 
@@ -105,6 +108,7 @@ enum LinkType<'a> {
     IncludeRange(PathBuf, SomeRange),
     IncludeAnchor(PathBuf, String),
     Playpen(PathBuf, Vec<&'a str>),
+    RustPartial(PathBuf, SomeRange),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -143,6 +147,7 @@ impl<'a> LinkType<'a> {
             LinkType::IncludeRange(p, _) => Some(return_relative_path(base, &p)),
             LinkType::IncludeAnchor(p, _) => Some(return_relative_path(base, &p)),
             LinkType::Playpen(p, _) => Some(return_relative_path(base, &p)),
+            LinkType::RustPartial(p, _) => Some(return_relative_path(base, &p)),
         }
     }
 }
@@ -199,6 +204,45 @@ fn parse_include_path(path: &str) -> LinkType<'static> {
     }
 }
 
+fn parse_rustpartial_path(path: &str) -> LinkType<'static> {
+    let mut parts = path.split(':');
+    let path = parts.next().unwrap().into();
+
+    let next_element = parts.next();
+    let start = if let Some(value) = next_element.and_then(|s| s.parse::<usize>().ok()) {
+        // subtract 1 since line numbers usually begin with 1
+        Some(value.saturating_sub(1))
+    } else {
+        None
+    };
+
+    let end = parts.next();
+    let has_end = end.is_some();
+    let end = end.and_then(|s| s.parse::<usize>().ok());
+    match start {
+        Some(start) => match end {
+            Some(end) => LinkType::RustPartial(path, SomeRange::Range(Range { start, end })),
+            None => {
+                if has_end {
+                    LinkType::RustPartial(path, SomeRange::RangeFrom(RangeFrom { start }))
+                } else {
+                    LinkType::RustPartial(
+                        path,
+                        SomeRange::Range(Range {
+                            start,
+                            end: start + 1,
+                        }),
+                    )
+                }
+            }
+        },
+        None => match end {
+            Some(end) => LinkType::RustPartial(path, SomeRange::RangeTo(RangeTo { end })),
+            None => LinkType::RustPartial(path, SomeRange::RangeFull(RangeFull)),
+        },
+    }
+}
+
 #[derive(PartialEq, Debug, Clone)]
 struct Link<'a> {
     start_index: usize,
@@ -218,6 +262,7 @@ impl<'a> Link<'a> {
                 match (typ.as_str(), file_arg) {
                     ("include", Some(pth)) => Some(parse_include_path(pth)),
                     ("playpen", Some(pth)) => Some(LinkType::Playpen(pth.into(), props)),
+                    ("rustpartial", Some(pth)) => Some(parse_rustpartial_path(pth)),
                     _ => None,
                 }
             }
@@ -285,6 +330,19 @@ impl<'a> Link<'a> {
                     attrs.join(","),
                     contents
                 ))
+            }
+            LinkType::RustPartial(ref pat, ref range) => {
+                let target = base.join(pat);
+
+                fs::read_to_string(&target)
+                    .map(|s| take_rust_partial_lines(&s, range.clone()))
+                    .chain_err(|| {
+                        format!(
+                            "Could not read file for link {} ({})",
+                            self.link_text,
+                            target.display(),
+                        )
+                    })
             }
         }
     }
